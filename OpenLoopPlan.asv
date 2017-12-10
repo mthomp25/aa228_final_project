@@ -1,0 +1,201 @@
+% without unknown terrain, we can perform value iteration (once) until
+% convergence to get the optimal policy
+%
+% WITH unknown terrain, we need to recompute policy after learning each new
+% terrain.
+
+%% OpenLoopPlan()
+% 1. Call ValueIteration() to get initial plan
+% 2. Step through gridworld with the initial plan (use playRover)
+% 3. When we have new info about the terrain, run value iteration again
+
+function [p_seq, score] = OpenLoopPlan(level, policy)
+
+    
+    env = setupEnv(level);
+    resetGame();
+    home = env.home;
+
+    gridSize = env.rows*env.rows; %number of possible positions
+    num_tsteps = env.missionLength/env.ts; % Number of time steps
+    num_samples = length(env.samples(1,:)); % number of samples
+    num_sloads = 2^num_samples; % Number of possible loading configurations
+    cargos = [0, env.samples(2,1)*[1:num_samples]]; % TODO: this assumes constant sample value
+    num_cargos = length(cargos);
+    
+    % initialize U (pos, time, cargo load, cargo value)
+    U = zeros(gridSize, num_tsteps, num_sloads, num_cargos);
+    
+    num_tsteps = env.missionLength/env.ts; %Number of time steps
+    n_zones = max(max(env.zones)); %number of terrain zones
+    terr = -1*ones(n_zones, 1); %vector of terrain values for each zone
+    
+    z = env.zones(home);
+    ter = home_terrain(env);
+    terr(z) = ter;
+    
+    %policy = ValueIterationWithTerrain(env, terr);
+    disp('call value iter')
+    
+    p_seq = zeros(num_tsteps, 1);
+    
+    pos = home;
+    t = 0;
+    
+    state.pos = home;
+    state.t = t;
+    state.cargo = 1;
+    state.visited = 0;
+    
+    %for i = 1:length(p_seq)
+    i = 1;
+    while t < num_tsteps
+        ti = t;
+        posi = pos;
+        
+        a = policy(state.pos, state.t+1, state.visited+1, state.cargo);
+        p_seq(i) = a;
+        
+        if pos == home
+            i_home = i;
+        end
+        
+        [~, pos]  = getObsv(t,pos,a,env);
+        [score, t] = playRover(a,env);
+        t = t/env.ts;
+        
+        z = env.zones(pos);
+        if terr(z) == -1
+            m = (env.topo(pos)-env.topo(posi))/env.d; % slope between centers of gridspaces
+            if m < 0
+                m = 0; % rover moves at same speed as flat when going downhill
+            end
+            
+            nts = t-ti;
+            ter = nts-(m+1);
+            
+            terr(z) = ter;
+            %policy = ValueIterationWithTerrain(env, terr);
+            disp('call value iter')
+        end
+
+        state = next_state(env, terr, state, a);
+        assert(pos == state.pos);
+        assert(t == state.t);
+        i = i+1;
+    end
+
+    p_seq = [p_seq(1:i_home-1); 0];
+    
+    resetGame();
+    [score, ~] = playRover(p_seq, env);
+end
+
+%% give the terrain at home position 
+function ter_h = home_terrain(env)
+
+    home = env.home;
+    
+    % [rh, ch] = ind2sub([env.rows, env.rows], home);
+    
+    gi = home+1; %sub2ind([env.rows, env.rows], rh, ch-1);
+    
+    a = 1;
+    
+    [tf, g]  = getObsv(0,gi,a,env);
+    
+    assert(g==home)
+    
+    m = (env.topo(g)-env.topo(gi))/env.d; % slope between centers of gridspaces
+    if m < 0
+        m = 0; % rover moves at same speed as flat when going downhill
+    end
+    
+    nts = tf/env.ts;
+    
+    ter_h = nts-(m+1);
+
+end
+
+
+function s_new = next_state(env, terr, s, a)
+
+    [dt, posnew] = moveOneSquare(env, terr, s.pos, a);
+    tnew = s.t + dt;
+
+    if s.pos == env.home
+        % don't double-count samples; reset cargo
+        s.cargo = 1;
+    end
+
+    % sample in this state?
+    sample = find(env.samples(1,:) == posnew);
+    % no sample, or we already picked it up
+    if (isempty(sample)) || (bitand(bitshift(1,sample-1),s.visited) ~= 0)
+        cargonew = s.cargo;
+        visited = s.visited;
+    else % new position has a sample! pick it up
+        cargonew = min(s.cargo + 1, 6); % increase index of cargo by one (+1 cargo)
+        visited = bitor(s.visited,bitshift(1,sample-1));
+    end
+    
+    s_new.pos = posnew;
+    s_new.t = tnew;
+    s_new.cargo = cargonew;
+    s_new.visited = visited;
+
+end
+
+
+function [dt, posnew] = moveOneSquare(env, terr, pos, a)
+    [row,col] = ind2sub([env.rows, env.rows], pos);
+    rownew = row;
+    colnew = col;
+    m = 0;
+    
+    switch a
+        case 1
+            % move up
+            if (row~=1) % don't go off the map
+                m = (env.topo(row-1,col) - env.topo(row,col))/env.d; % slope of this move
+                rownew = row-1;
+            end
+        
+        case 2
+            % move right
+            if (col~=env.rows) % don't go off the map
+                m = (env.topo(row,col+1) - env.topo(row,col))/env.d; % slope of this move
+                colnew = col+1;
+            end
+        
+        case 3
+            % move down
+            if (row~=env.rows) % don't go off the map
+                m = (env.topo(row+1,col) - env.topo(row,col))/env.d; % slope of this move
+                rownew = row+1;
+            end
+
+        otherwise
+            % move left
+            if (col~=1) % don't go off the map
+                m = (env.topo(row,col-1) - env.topo(row,col))/env.d;
+                colnew = col-1;
+            end
+    end
+    
+    % NOTE: THIS HAS BEEN CHANGED.
+    % posnew = pos if it hits the edge, which should be enough
+    % we used to have dt = 0 also
+    m = max(m, 0);
+    
+    posnew = sub2ind([env.rows, env.rows], rownew, colnew);
+    
+    assert(terr(env.zones(rownew,colnew)) >= 0)
+    dt = terr(env.zones(rownew,colnew))+m+1;  % see definition of speed
+    
+end
+
+
+
+
+
