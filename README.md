@@ -2,6 +2,7 @@
 code for aa228 final project
 
 Kaitlin Dennison, Stephanie Schneider, and Michael Thompson
+
 Stanford University 
 
 Please see final paper for problem setup and method description 
